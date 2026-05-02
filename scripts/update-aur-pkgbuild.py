@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-Write tyrannus-bin PKGBUILD for the AUR from contrib/aur/tyrannus-bin.PKGBUILD.in.
+Write tyrannus PKGBUILD for the AUR from contrib/aur/tyrannus.PKGBUILD.in.
 
 Fetches linux-x86_64 tarball SHA256 from GitHub Releases (same URL layout as Homebrew bump).
 Requires an existing Release with assets for release_tag.
@@ -41,7 +41,7 @@ def main() -> int:
     )
     p.add_argument(
         "--template",
-        default="contrib/aur/tyrannus-bin.PKGBUILD.in",
+        default="contrib/aur/tyrannus.PKGBUILD.in",
         help="PKGBUILD template path (cwd = repo root)",
     )
     p.add_argument(
