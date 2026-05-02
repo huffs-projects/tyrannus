@@ -11,10 +11,10 @@ class Tyrannus < Formula
 
   if OS.mac? && Hardware::CPU.arm?
     url "#{gh_release}/tyrannus-#{RELEASE_TAG}-macos-aarch64.tar.gz"
-    sha256 "1799daa148f9a01702ebd4c0b8185e67eed818245b9351de4b756d7e2f5ee1e9" # HOMEBREW_BUMP_MACOS_AARCH64
+    sha256 "8ff6876e35917c8ac17750369d4780f87f497cb67e2cd75f6f3d4032872ff158" # HOMEBREW_BUMP_MACOS_AARCH64
   elsif OS.linux? && Hardware::CPU.intel?
     url "#{gh_release}/tyrannus-#{RELEASE_TAG}-linux-x86_64.tar.gz"
-    sha256 "37f46551fb0c77406dc77a961d18c84211c85cd7e6d460dda31589054353e33f" # HOMEBREW_BUMP_LINUX_X86_64
+    sha256 "3e6f0e31a1783e2f10bccc3c0ad121cc2818585aa9753835c1fff60986b0de17" # HOMEBREW_BUMP_LINUX_X86_64
   else
     odie "tyrannus: unsupported platform (only linux-x86_64 and macOS arm64 binaries are shipped)"
   end
