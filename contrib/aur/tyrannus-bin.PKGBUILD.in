@@ -1,7 +1,7 @@
-# Maintainer: set in AUR (see tyrannus contrib + scripts/update-aur-pkgbuild.py)
+# Maintainer: Huff Mullen
 # Binary release from GitHub; pkgver follows upstream tag (no leading v).
 
-pkgname=tyrannus-bin
+pkgname=tyrannus
 pkgver=__PKGVER__
 pkgrel=1
 pkgdesc="Terminal word processor (Ratatui)"
