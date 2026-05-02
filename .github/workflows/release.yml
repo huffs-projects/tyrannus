@@ -191,23 +191,16 @@ jobs:
             --template contrib/aur/tyrannus.PKGBUILD.in \
             --output aur-pkg/PKGBUILD
 
-      # Regenerate .SRCINFO with Arch tooling (PKGBUILD + SRCINFO required by AUR).
-      # makepkg refuses EUID 0. Run the whole container as UID 1000 (no su/PAM); copy PKGBUILD into /tmp/build.
+      # .SRCINFO required by AUR (makepkg --printsrcinfo in a maintained env).
       - name: Generate .SRCINFO
         if: steps.aur.outputs.enabled == 'true'
-        run: |
-          set -euo pipefail
-          docker run --rm \
-            -v "${GITHUB_WORKSPACE}/aur-pkg/PKGBUILD:/src/PKGBUILD:ro" \
-            --user 1000:1000 \
-            archlinux:latest \
-            bash -lc '
-              set -euo pipefail
-              mkdir -p /tmp/build
-              cp /src/PKGBUILD /tmp/build/PKGBUILD
-              cd /tmp/build
-              makepkg --printsrcinfo
-            ' > "${GITHUB_WORKSPACE}/aur-pkg/.SRCINFO"
+        uses: heyhusen/archlinux-package-action@v3.0.0
+        with:
+          path: aur-pkg
+          flags: ''
+          namcap: false
+          srcinfo: true
+          archlinux_keyring: false
 
       - name: Commit and push to AUR
         if: steps.aur.outputs.enabled == 'true'
