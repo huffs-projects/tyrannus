@@ -1,0 +1,23 @@
+# Maintainer: set in AUR (see tyrannus contrib + scripts/update-aur-pkgbuild.py)
+# Binary release from GitHub; pkgver follows upstream tag (no leading v).
+
+pkgname=tyrannus-bin
+pkgver=__PKGVER__
+pkgrel=1
+pkgdesc="Terminal word processor (Ratatui)"
+arch=('x86_64')
+url="__HOMEPAGE__"
+license=('GPL-2.0-only')
+depends=('gcc-libs' 'glibc')
+provides=('tyrannus')
+conflicts=('tyrannus')
+
+_gh_release_tag='__RELEASE_TAG__'
+source=("https://github.com/__REPO__/releases/download/${_gh_release_tag}/tyrannus-${_gh_release_tag}-linux-x86_64.tar.gz")
+
+sha256sums=('__SHA256__')
+
+package() {
+  tar -xzf "${srcdir}/tyrannus-${_gh_release_tag}-linux-x86_64.tar.gz" -C "${srcdir}"
+  install -Dm755 "${srcdir}/tyrannus" "${pkgdir}/usr/bin/tyrannus"
+}
