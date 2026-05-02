@@ -3,7 +3,8 @@ name = "tyrannus"
 version = "0.1.0"
 edition = "2021"
 description = "Terminal word processor (Ratatui)"
-license = "MIT OR Apache-2.0"
+repository = "https://github.com/huffs-projects/tyrannus"
+license = "GPL-2.0-only"
 
 [dependencies]
 crossterm = "0.28"

@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 """
-Rewrite homebrew/Formula/tyrannus.rb release tag + per-platform SHA256 placeholders
-(HOMEBREW_BUMP_*) using tarballs uploaded for the given Git tag.
+Rewrite this repo's Homebrew formula (Formula/tyrannus.rb): release tag + SHA256
+placeholders (HOMEBREW_BUMP_*), using tarballs from GitHub Releases.
+
+Release assets live on github.com/<repo>/releases (default huffs-projects/tyrannus).
 """
 from __future__ import annotations
 
@@ -29,8 +31,8 @@ def main() -> int:
     p.add_argument("release_tag", help="GitHub release tag (e.g. 0.1.2 or v0.1.2)")
     p.add_argument(
         "--formula",
-        default="homebrew/Formula/tyrannus.rb",
-        help="Path to tyrannus.rb",
+        default="Formula/tyrannus.rb",
+        help="Path to tyrannus.rb (repo root as cwd)",
     )
     p.add_argument(
         "--repo",
