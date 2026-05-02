@@ -115,8 +115,8 @@ jobs:
           git pull --rebase origin main
           git push origin HEAD:main
 
-  # Publishes tyrannus-bin to the AUR (binary from GitHub Releases linux-x86_64 tarball).
-  # Prereqs: AUR package ssh://aur@aur.archlinux.org/tyrannus-bin.git exists; repo secret AUR_SSH_PRIVATE_KEY.
+  # Publishes tyrannus to the AUR (binary from GitHub Releases linux-x86_64 tarball).
+  # Prereqs: AUR package ssh://aur@aur.archlinux.org/tyrannus.git exists; repo secret AUR_SSH_PRIVATE_KEY.
   # Skips remaining steps when the secret is unset (job-level if cannot use secrets.*).
   bump_aur_pkgbuild:
     needs: release
@@ -156,7 +156,7 @@ jobs:
         if: steps.aur.outputs.enabled == 'true'
         run: |
           set -euo pipefail
-          git clone "ssh://aur@aur.archlinux.org/tyrannus-bin.git" aur-pkg
+          git clone "ssh://aur@aur.archlinux.org/tyrannus.git" aur-pkg
           git -C aur-pkg config user.name "github-actions[bot]"
           git -C aur-pkg config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
@@ -169,7 +169,7 @@ jobs:
           set -euo pipefail
           python3 scripts/update-aur-pkgbuild.py "${RELEASE_TAG}" \
             --repo "${GITHUB_REPOSITORY}" \
-            --template contrib/aur/tyrannus-bin.PKGBUILD.in \
+            --template contrib/aur/tyrannus.PKGBUILD.in \
             --output aur-pkg/PKGBUILD
 
       # Regenerate .SRCINFO with Arch tooling (PKGBUILD + SRCINFO required by AUR).
@@ -195,6 +195,6 @@ jobs:
             echo "No AUR changes; skipping push."
             exit 0
           fi
-          git commit -m "aur: bump tyrannus-bin for ${RELEASE_TAG}"
+          git commit -m "aur: bump tyrannus for ${RELEASE_TAG}"
           git pull --rebase origin master
           git push origin master
