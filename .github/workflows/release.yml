@@ -192,15 +192,25 @@ jobs:
             --output aur-pkg/PKGBUILD
 
       # Regenerate .SRCINFO with Arch tooling (PKGBUILD + SRCINFO required by AUR).
+      # makepkg must not run as root; emit .SRCINFO to runner via stdout (avoids chown on mounted aur-pkg).
       - name: Generate .SRCINFO
         if: steps.aur.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           docker run --rm \
-            -v "${GITHUB_WORKSPACE}/aur-pkg:/work" \
-            -w /work \
+            -v "${GITHUB_WORKSPACE}/aur-pkg/PKGBUILD:/src/PKGBUILD:ro" \
             archlinux:latest \
-            bash -lc 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null && makepkg --printsrcinfo > .SRCINFO'
+            bash -lc '
+              set -euo pipefail
+              pacman-key --init
+              pacman-key --populate archlinux
+              pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null
+              mkdir -p /build
+              cp /src/PKGBUILD /build/PKGBUILD
+              useradd -m -u 1000 builder
+              chown -R builder:builder /build
+              su builder -s /bin/bash -c "cd /build && makepkg --printsrcinfo"
+            ' > "${GITHUB_WORKSPACE}/aur-pkg/.SRCINFO"
 
       - name: Commit and push to AUR
         if: steps.aur.outputs.enabled == 'true'
