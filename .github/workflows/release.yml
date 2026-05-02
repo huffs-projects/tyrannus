@@ -114,83 +114,69 @@ jobs:
           git commit -m "homebrew: bump formula for ${RELEASE_TAG}"
           git pull --rebase origin main
           git push origin HEAD:main
-name: Release
 
-on:
-  release:
-    types: [published]
-
-permissions:
-  contents: write
-
-jobs:
-  build:
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - os: ubuntu-latest
-            target: linux-x86_64
-          - os: macos-latest
-            target: macos-aarch64
-          - os: windows-latest
-            target: windows-x86_64
-    runs-on: ${{ matrix.os }}
+  # Publishes tyrannus-bin to the AUR (binary from GitHub Releases linux-x86_64 tarball).
+  # Prereqs: AUR package ssh://aur@aur.archlinux.org/tyrannus-bin.git exists; repo secret AUR_SSH_PRIVATE_KEY.
+  # Skipped when the secret is unset (e.g. forks).
+  bump_aur_pkgbuild:
+    needs: release
+    runs-on: ubuntu-latest
+    if: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
     steps:
       - uses: actions/checkout@v4
         with:
-          ref: ${{ github.event.release.tag_name }}
+          ref: main
+          fetch-depth: 0
 
-      - uses: dtolnay/rust-toolchain@v1
+      - uses: webfactory/ssh-agent@v0.9.1
         with:
-          toolchain: stable
+          ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
-      - uses: Swatinem/rust-cache@v2
+      - name: Trust AUR host key
+        run: |
+          set -euo pipefail
+          mkdir -p ~/.ssh
+          ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
 
-      - name: Build release
-        run: cargo build --release --locked
+      - name: Clone AUR repository
+        run: |
+          set -euo pipefail
+          git clone "ssh://aur@aur.archlinux.org/tyrannus-bin.git" aur-pkg
+          git -C aur-pkg config user.name "github-actions[bot]"
+          git -C aur-pkg config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
-      - name: Package
-        id: pkg
-        shell: bash
+      - name: Update PKGBUILD
+        env:
+          RELEASE_TAG: ${{ github.event.release.tag_name }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          python3 scripts/update-aur-pkgbuild.py "${RELEASE_TAG}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --template contrib/aur/tyrannus-bin.PKGBUILD.in \
+            --output aur-pkg/PKGBUILD
+
+      # Regenerate .SRCINFO with Arch tooling (PKGBUILD + SRCINFO required by AUR).
+      - name: Generate .SRCINFO
+        run: |
+          set -euo pipefail
+          docker run --rm \
+            -v "${GITHUB_WORKSPACE}/aur-pkg:/work" \
+            -w /work \
+            archlinux:latest \
+            bash -lc 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null && makepkg --printsrcinfo > .SRCINFO'
+
+      - name: Commit and push to AUR
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
           set -euo pipefail
-          cd "$GITHUB_WORKSPACE"
-          version="${RELEASE_TAG}"
-          target="${{ matrix.target }}"
-          if [[ "${RUNNER_OS}" == "Windows" ]]; then
-            archive="tyrannus-${version}-${target}.zip"
-            powershell -NoProfile -Command \
-              "Compress-Archive -LiteralPath 'target/release/tyrannus.exe' -DestinationPath '${archive}' -Force"
-          else
-            archive="tyrannus-${version}-${target}.tar.gz"
-            mkdir -p bundles
-            cp target/release/tyrannus bundles/tyrannus
-            chmod +x bundles/tyrannus
-            tar -C bundles -czf "${archive}" tyrannus
+          cd aur-pkg
+          git add PKGBUILD .SRCINFO
+          if git diff --cached --quiet; then
+            echo "No AUR changes; skipping push."
+            exit 0
           fi
-          echo "archive=${archive}" >> "${GITHUB_OUTPUT}"
-
-      - uses: actions/upload-artifact@v4
-        with:
-          name: tyrannus-release-${{ matrix.target }}
-          path: ${{ steps.pkg.outputs.archive }}
-
-  release:
-    needs: build
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: release-assets
-          pattern: tyrannus-release-*
-          merge-multiple: true
-
-      - uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.event.release.tag_name }}
-          generate_release_notes: true
-          files: |
-            release-assets/*
+          git commit -m "aur: bump tyrannus-bin for ${RELEASE_TAG}"
+          git pull --rebase origin master
+          git push origin master
