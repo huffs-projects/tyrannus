@@ -117,28 +117,43 @@ jobs:
 
   # Publishes tyrannus-bin to the AUR (binary from GitHub Releases linux-x86_64 tarball).
   # Prereqs: AUR package ssh://aur@aur.archlinux.org/tyrannus-bin.git exists; repo secret AUR_SSH_PRIVATE_KEY.
-  # Skipped when the secret is unset (e.g. forks).
+  # Skips remaining steps when the secret is unset (job-level if cannot use secrets.*).
   bump_aur_pkgbuild:
     needs: release
     runs-on: ubuntu-latest
-    if: ${{ secrets.AUR_SSH_PRIVATE_KEY != '' }}
     steps:
+      - name: Guard (AUR secret present)
+        id: aur
+        env:
+          AUR_SSH_PRIVATE_KEY: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
+        run: |
+          if [ -n "$AUR_SSH_PRIVATE_KEY" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+            echo "Skipping AUR bump: AUR_SSH_PRIVATE_KEY is not set."
+          fi
+
       - uses: actions/checkout@v4
+        if: steps.aur.outputs.enabled == 'true'
         with:
           ref: main
           fetch-depth: 0
 
       - uses: webfactory/ssh-agent@v0.9.1
+        if: steps.aur.outputs.enabled == 'true'
         with:
           ssh-private-key: ${{ secrets.AUR_SSH_PRIVATE_KEY }}
 
       - name: Trust AUR host key
+        if: steps.aur.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           mkdir -p ~/.ssh
           ssh-keyscan aur.archlinux.org >> ~/.ssh/known_hosts
 
       - name: Clone AUR repository
+        if: steps.aur.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           git clone "ssh://aur@aur.archlinux.org/tyrannus-bin.git" aur-pkg
@@ -146,6 +161,7 @@ jobs:
           git -C aur-pkg config user.email "41898282+github-actions[bot]@users.noreply.github.com"
 
       - name: Update PKGBUILD
+        if: steps.aur.outputs.enabled == 'true'
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
           GITHUB_REPOSITORY: ${{ github.repository }}
@@ -158,6 +174,7 @@ jobs:
 
       # Regenerate .SRCINFO with Arch tooling (PKGBUILD + SRCINFO required by AUR).
       - name: Generate .SRCINFO
+        if: steps.aur.outputs.enabled == 'true'
         run: |
           set -euo pipefail
           docker run --rm \
@@ -167,6 +184,7 @@ jobs:
             bash -lc 'pacman-key --init && pacman-key --populate archlinux && pacman -Sy --noconfirm archlinux-keyring pacman >/dev/null && makepkg --printsrcinfo > .SRCINFO'
 
       - name: Commit and push to AUR
+        if: steps.aur.outputs.enabled == 'true'
         env:
           RELEASE_TAG: ${{ github.event.release.tag_name }}
         run: |
