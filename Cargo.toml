@@ -1,0 +1,30 @@
+[package]
+name = "tyrannus"
+version = "0.1.0"
+edition = "2021"
+description = "Terminal word processor (Ratatui)"
+license = "MIT OR Apache-2.0"
+
+[dependencies]
+crossterm = "0.28"
+ratatui = "0.29"
+unicode-segmentation = "1.12"
+unicode-width = "0.2"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"
+
+[dev-dependencies]
+criterion = { version = "0.5", features = ["html_reports"] }
+proptest = "1.5"
+
+[lib]
+name = "tyrannus"
+path = "src/lib.rs"
+
+[[bin]]
+name = "tyrannus"
+path = "src/main.rs"
+
+[[bench]]
+name = "large_document"
+harness = false

@@ -1,0 +1,48 @@
+theme_preset = "dark"
+start_menu_title = "ANSI-Shadow"
+
+[theme]
+background = "black"
+foreground = "white"
+accent = "green"
+link = "cyan"
+link_missing = "red"
+cursor_line = "darkgray"
+code = "yellow"
+list_selection_foreground = "black"
+list_selection_background = "green"
+
+[spacing]
+line_gap_lines = 0
+paragraph_gap_lines = 0
+code_margin = 1
+
+[typography]
+extra_word_spacing = 0
+extra_letter_spacing = 0
+
+[cursor]
+style = "line" # block | line | underline
+blink = true
+
+[editor]
+tab_width = 4
+hard_tabs = false
+auto_wrap = true
+show_invisibles = false
+
+[ui]
+status_details_default = false
+start_menu_title = "ANSI-Shadow"
+
+# [paths]
+# writing_folder = "~/Writing"
+
+[keymap]
+# quit = "ctrl+q"
+# open_palette = "ctrl+p"
+# open_menu = "ctrl+m"
+# open_help = "f1"
+# save = "ctrl+s"
+# writing_folder — remap opens the configurable writing directory picker
+# toggle_chrome_hidden — default Ctrl+K is built-in; set this key only to remap the action
