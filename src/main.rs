@@ -81,6 +81,10 @@ enum OverlayMode {
     RecentDocuments,
     WritingFolder,
     NewDocumentFilename,
+    /// Save recovered autosave under Writing folder (basename prompt).
+    RecoverySaveFilename,
+    /// First-run choice for non-empty recovery snapshot file.
+    RecoverySnapshot,
     Configuration,
     Help,
 }
@@ -93,11 +97,15 @@ struct UiState {
     palette_selected: usize,
     menu_selected: usize,
     list_selected: usize,
+    /// Selection in [`OverlayMode::RecoverySnapshot`] (Open / Save / Delete).
+    recovery_menu_selected: usize,
     start_menu_title_lines: Vec<String>,
     /// True when crossterm `EnableMouseCapture` succeeded at startup.
     mouse_enabled: bool,
     /// Toggles verbose diagnostic status details.
     status_details: bool,
+    /// When help is dismissed (Esc / F1), return here (editor is [`OverlayMode::None`]).
+    help_return_overlay: Option<OverlayMode>,
     /// Hides bordered frame, title, and status line (toggle with Ctrl+K).
     chrome_hidden: bool,
     /// Save result dialog content; painted above menu or editor until dismissed (Esc / Enter).
@@ -113,9 +121,11 @@ impl Default for UiState {
             palette_selected: 0,
             menu_selected: 0,
             list_selected: 0,
+            recovery_menu_selected: 0,
             start_menu_title_lines: Vec::new(),
             mouse_enabled: true,
             status_details: false,
+            help_return_overlay: None,
             chrome_hidden: false,
             save_feedback: None,
         }
@@ -162,6 +172,10 @@ enum OverlayAction {
     RetryConfiguration,
     CreateConfiguration,
     ConfirmNewDocumentBasename,
+    ConfirmRecoverySaveBasename,
+    RecoveryOpen,
+    RecoverySavePrompt,
+    RecoveryDelete,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -173,6 +187,8 @@ struct AppState {
     writing_folder_overlay_error: Option<String>,
     status_message: Option<String>,
     recovery_path: PathBuf,
+    /// Non-empty snapshot from `recovery_path` at startup; cleared after user resolves it.
+    pending_recovery_snapshot: Option<String>,
     edit_counter: usize,
 }
 
@@ -263,18 +279,16 @@ fn run() -> io::Result<()> {
         status_details: app_config.ui.status_details_default,
         ..UiState::default()
     };
-    // Always launch into the start menu regardless of future default changes.
-    ui_state.overlay = OverlayMode::Menu;
     ui_state.menu_selected = 0;
     ui_state.start_menu_title_lines =
         load_start_menu_title_lines(default_configuration_path().as_path(), &app_config);
-    maybe_restore_recovery_snapshot(
-        &mut doc,
-        &mut state,
-        &mut cache,
-        &cfg,
-        &mut app_state,
-    );
+    load_pending_recovery_snapshot(&mut app_state);
+    if app_state.pending_recovery_snapshot.is_some() {
+        ui_state.overlay = OverlayMode::RecoverySnapshot;
+        ui_state.recovery_menu_selected = 0;
+    } else {
+        ui_state.overlay = OverlayMode::Menu;
+    }
 
     loop {
         let mut frame_area: Rect = Rect::new(0, 0, 0, 0);
@@ -359,22 +373,31 @@ fn run() -> io::Result<()> {
                     && key.modifiers.contains(KeyModifiers::CONTROL);
                 if toggle_chrome {
                     apply_toggle_chrome_hidden(&mut ui_state, &mut app_state);
-                } else if let Some(action) =
-                    handle_overlay_key(key.code, key.modifiers, &mut ui_state, &app_state)
-                {
-                    if execute_overlay_action(
-                        action,
-                        &mut doc,
-                        &mut state,
-                        &mut cache,
-                        &cfg,
-                        &mut ui_state,
-                        &mut app_state,
-                        app_config.paths.writing_folder.as_path(),
-                    ) {
-                        should_quit = true;
-                        cursor_moved = true;
+                } else if ui_state.overlay != OverlayMode::None {
+                    // Overlays mutate `UiState` through `handle_overlay_key` without always returning an
+                    // `OverlayAction` (typing in the filename prompt / palette query). Returning `None`
+                    // must not fall through to the document editor — that duplicated input into the
+                    // buffer behind the modal.
+                    if let Some(action) =
+                        handle_overlay_key(key.code, key.modifiers, &mut ui_state, &app_state)
+                    {
+                        if execute_overlay_action(
+                            action,
+                            &mut doc,
+                            &mut state,
+                            &mut cache,
+                            &cfg,
+                            &mut ui_state,
+                            &mut app_state,
+                            app_config.paths.writing_folder.as_path(),
+                        ) {
+                            should_quit = true;
+                        }
                     }
+                    if should_quit {
+                        break;
+                    }
+                    continue;
                 } else {
                     if let Some(remap) =
                         lookup_remap_action(&runtime_keymap, key.code, key.modifiers)
@@ -385,7 +408,7 @@ fn run() -> io::Result<()> {
                             }
                             RemapAction::OpenPalette => ui_state.overlay = OverlayMode::CommandPalette,
                             RemapAction::OpenMenu => ui_state.overlay = OverlayMode::Menu,
-                            RemapAction::OpenHelp => ui_state.overlay = OverlayMode::Help,
+                            RemapAction::OpenHelp => push_help_overlay(&mut ui_state),
                             RemapAction::ToggleChromeHidden => {
                                 apply_toggle_chrome_hidden(&mut ui_state, &mut app_state);
                             }
@@ -446,7 +469,7 @@ fn run() -> io::Result<()> {
                             save_current_document(&doc, &mut ui_state, &mut app_state);
                         }
                         _ if key_opens_help(key.code, key.modifiers) => {
-                            ui_state.overlay = OverlayMode::Help;
+                            push_help_overlay(&mut ui_state);
                         }
                         KeyCode::Esc => {
                             ui_state.overlay = OverlayMode::Menu;
@@ -1073,6 +1096,14 @@ fn key_opens_help(code: KeyCode, modifiers: KeyModifiers) -> bool {
             && (code == KeyCode::Char('h') || code == KeyCode::Backspace))
 }
 
+/// Enter help overlay, remembering the current overlay (including [`OverlayMode::None`] for editor).
+fn push_help_overlay(ui_state: &mut UiState) {
+    if ui_state.overlay != OverlayMode::Help {
+        ui_state.help_return_overlay = Some(ui_state.overlay);
+        ui_state.overlay = OverlayMode::Help;
+    }
+}
+
 fn handle_overlay_key(
     code: KeyCode,
     modifiers: KeyModifiers,
@@ -1083,7 +1114,10 @@ fn handle_overlay_key(
         OverlayMode::None => return None,
         OverlayMode::Help => {
             if code == KeyCode::Esc || key_opens_help(code, modifiers) {
-                ui_state.overlay = OverlayMode::Menu;
+                ui_state.overlay = ui_state
+                    .help_return_overlay
+                    .take()
+                    .unwrap_or(OverlayMode::Menu);
             }
         }
         OverlayMode::Menu => match code {
@@ -1108,7 +1142,7 @@ fn handle_overlay_key(
                 ui_state.list_selected = (ui_state.list_selected + 1).min(last);
             }
             KeyCode::Enter => return Some(OverlayAction::OpenSelectedRecent),
-            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
             _ => {}
         },
         OverlayMode::WritingFolder => match code {
@@ -1119,7 +1153,41 @@ fn handle_overlay_key(
                 ui_state.list_selected = (ui_state.list_selected + 1).min(last);
             }
             KeyCode::Enter => return Some(OverlayAction::OpenSelectedWriting),
-            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
+            _ => {}
+        },
+        OverlayMode::RecoverySnapshot => match code {
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
+            KeyCode::Up => {
+                ui_state.recovery_menu_selected = ui_state.recovery_menu_selected.saturating_sub(1);
+            }
+            KeyCode::Down => {
+                ui_state.recovery_menu_selected = (ui_state.recovery_menu_selected + 1).min(2);
+            }
+            KeyCode::Enter => {
+                return match ui_state.recovery_menu_selected {
+                    0 => Some(OverlayAction::RecoveryOpen),
+                    1 => Some(OverlayAction::RecoverySavePrompt),
+                    2 => Some(OverlayAction::RecoveryDelete),
+                    _ => Some(OverlayAction::RecoveryOpen),
+                };
+            }
+            _ => {}
+        },
+        OverlayMode::RecoverySaveFilename => match code {
+            KeyCode::Esc => {
+                ui_state.overlay = OverlayMode::RecoverySnapshot;
+            }
+            KeyCode::Enter => return Some(OverlayAction::ConfirmRecoverySaveBasename),
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
+            KeyCode::Backspace | KeyCode::Delete => {
+                ui_state.new_document_filename_input.pop();
+            }
+            KeyCode::Char(c) => {
+                if ui_state.new_document_filename_input.chars().count() < 256 {
+                    ui_state.new_document_filename_input.push(c);
+                }
+            }
             _ => {}
         },
         OverlayMode::NewDocumentFilename => match code {
@@ -1127,8 +1195,8 @@ fn handle_overlay_key(
                 ui_state.overlay = OverlayMode::Menu;
             }
             KeyCode::Enter => return Some(OverlayAction::ConfirmNewDocumentBasename),
-            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
-            KeyCode::Backspace => {
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
+            KeyCode::Backspace | KeyCode::Delete => {
                 ui_state.new_document_filename_input.pop();
             }
             KeyCode::Char(c) => {
@@ -1146,7 +1214,7 @@ fn handle_overlay_key(
             KeyCode::Char('c') | KeyCode::Char('C') => {
                 return Some(OverlayAction::CreateConfiguration);
             }
-            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
             _ => {}
         },
         OverlayMode::CommandPalette => match code {
@@ -1167,8 +1235,8 @@ fn handle_overlay_key(
             KeyCode::Char('p') if modifiers.contains(KeyModifiers::CONTROL) => {
                 ui_state.overlay = OverlayMode::None;
             }
-            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
-            KeyCode::Backspace => {
+                        _ if key_opens_help(code, modifiers) => push_help_overlay(ui_state),
+            KeyCode::Backspace | KeyCode::Delete => {
                 ui_state.palette_query.pop();
                 ui_state.palette_selected = 0;
             }
@@ -1275,6 +1343,71 @@ fn execute_overlay_action(
                 }
             }
         }
+        OverlayAction::ConfirmRecoverySaveBasename => {
+            let Some(snapshot) = app_state.pending_recovery_snapshot.take() else {
+                ui_state.overlay = OverlayMode::Menu;
+                return false;
+            };
+            match compose_new_document_path(writing_root, ui_state.new_document_filename_input.as_str())
+            {
+                Err(msg) => {
+                    app_state.pending_recovery_snapshot = Some(snapshot);
+                    app_state.status_message = Some(msg);
+                }
+                Ok(path) => match fs::write(path.as_path(), snapshot.as_str()) {
+                    Err(err) => {
+                        app_state.pending_recovery_snapshot = Some(snapshot);
+                        app_state.status_message = Some(format!(
+                            "Could not save {}: {err}",
+                            path.display()
+                        ));
+                    }
+                    Ok(()) => {
+                        *doc = plain_text_to_document(&snapshot);
+                        *state = EditorState::default();
+                        state.cursor.normalize(doc);
+                        cache.sync(doc, 1, cfg);
+                        push_recent_document(app_state, path.clone());
+                        app_state.current_document_path = Some(path.clone());
+                        ui_state.new_document_filename_input.clear();
+                        let _ = fs::remove_file(&app_state.recovery_path);
+                        ui_state.overlay = OverlayMode::None;
+                        app_state.status_message =
+                            Some(format!("Saved recovered text to {}", path.display()));
+                    }
+                },
+            }
+        }
+        OverlayAction::RecoveryOpen => {
+            if apply_pending_recovery_to_editor(app_state, doc, state, cache, cfg) {
+                ui_state.overlay = OverlayMode::None;
+                app_state.status_message = Some(
+                    "Recovered autosave snapshot into editor. Use Ctrl+S to save.".to_string(),
+                );
+            }
+        }
+        OverlayAction::RecoverySavePrompt => {
+            match require_writing_folder(writing_root) {
+                Err(msg) => {
+                    app_state.status_message = Some(msg.clone());
+                    ui_state.save_feedback = Some(msg);
+                }
+                Ok(()) => {
+                    ui_state.new_document_filename_input.clear();
+                    ui_state.overlay = OverlayMode::RecoverySaveFilename;
+                    app_state.status_message = Some(
+                        "Enter basename under Writing folder. Extension optional (.md if omitted)."
+                            .to_string(),
+                    );
+                }
+            }
+        }
+        OverlayAction::RecoveryDelete => {
+            discard_pending_recovery(app_state);
+            ui_state.overlay = OverlayMode::Menu;
+            app_state.status_message =
+                Some("Autosave snapshot discarded.".to_string());
+        }
     }
     false
 }
@@ -1319,7 +1452,7 @@ fn execute_command(
             unreachable!("NewDocument handled before overlay reset")
         }
         AppCommand::ShowHelp => {
-            ui_state.overlay = OverlayMode::Help;
+            push_help_overlay(ui_state);
             app_state.status_message = Some("Opened help.".to_string());
         }
         AppCommand::RecentDocuments => {
@@ -1447,6 +1580,64 @@ fn paint_overlay(
         OverlayMode::Menu => {
             paint_start_menu(f, ui_state, theme);
         }
+        OverlayMode::RecoverySnapshot => {
+            let Some(_) = app_state.pending_recovery_snapshot.as_ref() else {
+                return;
+            };
+            let modal_w = 74.min(f.area().width.max(24));
+            let inner_w = (modal_w as usize).saturating_sub(4).max(16);
+            let bytes = app_state
+                .pending_recovery_snapshot
+                .as_ref()
+                .map_or(0, String::len);
+            let intro = format!(
+                "An autosave snapshot from a previous session is available ({} bytes UTF-8). Choose:",
+                bytes
+            );
+            let intro_wrapped = wrap_modal_paragraph(intro.as_str(), inner_w);
+            let opt_labels = [
+                "Open — load into editor",
+                "Save — choose a file under Writing folder",
+                "Delete — discard autosave permanently",
+            ];
+            let menu_rows = opt_labels.len();
+            let body_rows = intro_wrapped.len() + menu_rows + 5;
+            let h = (body_rows as u16)
+                .saturating_add(3)
+                .min(f.area().height.max(8))
+                .max(10);
+            let area = centered_rect(f.area(), modal_w, h);
+            f.render_widget(Clear, area);
+            let mut lines: Vec<Line> = vec![Line::from(" Unsaved autosave "), Line::from("")];
+            lines.extend(intro_wrapped);
+            lines.push(Line::from(""));
+            for (idx, label) in opt_labels.iter().enumerate() {
+                let selected = idx == ui_state.recovery_menu_selected;
+                let style = if selected {
+                    Style::default()
+                        .fg(theme_color_in(theme, ThemeRole::ListSelectionForeground))
+                        .bg(theme_color_in(theme, ThemeRole::ListSelectionBackground))
+                } else {
+                    Style::default().fg(theme_color_in(theme, ThemeRole::Foreground))
+                };
+                lines.push(Line::from(Span::styled(
+                    format!("{} {label}", if selected { ">" } else { " " }),
+                    style,
+                )));
+            }
+            lines.push(Line::from(""));
+            lines.push(Line::from(
+                "  Up/Down: move   Enter: choose   F1: help",
+            ));
+            let widget = Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" Autosave ")
+                    .border_style(Style::default().fg(theme_color_in(theme, ThemeRole::Accent)))
+                    .style(Style::default().bg(theme_color_in(theme, ThemeRole::Background))),
+            );
+            f.render_widget(widget, area);
+        }
         OverlayMode::RecentDocuments => {
             let area = centered_rect(f.area(), 70, 16);
             f.render_widget(Clear, area);
@@ -1566,14 +1757,23 @@ fn paint_overlay(
         }
         OverlayMode::CommandPalette => {
             let items = filtered_palette_items(&ui_state.palette_query);
-            let height = (items.len().min(6) as u16) + 5;
-            let area = centered_rect(f.area(), 60, height.max(8));
+            let modal_w = 60.min(f.area().width.max(24));
+            let inner_w = (modal_w as usize).saturating_sub(4).max(16);
+            let query_line = format!("> {}", ui_state.palette_query);
+            let query_wrapped = wrap_modal_paragraph(query_line.as_str(), inner_w);
+            let list_rows = if items.is_empty() {
+                1
+            } else {
+                items.len().min(6)
+            };
+            let content_h = query_wrapped.len() + 1 + list_rows + 1 + 1;
+            let height = ((content_h as u16).saturating_add(4))
+                .min(f.area().height.max(8))
+                .max(8);
+            let area = centered_rect(f.area(), modal_w, height);
             f.render_widget(Clear, area);
 
-            let mut lines: Vec<Line> = vec![Line::from(Span::raw(format!(
-                "> {}",
-                ui_state.palette_query
-            )))];
+            let mut lines: Vec<Line> = query_wrapped;
             lines.push(Line::from(""));
             for (idx, (name, _)) in items.iter().take(6).enumerate() {
                 let selected = idx == ui_state.palette_selected;
@@ -1610,31 +1810,28 @@ fn paint_overlay(
             f.render_widget(widget, area);
         }
         OverlayMode::NewDocumentFilename => {
-            let area = centered_rect(f.area(), 70, 13);
-            f.render_widget(Clear, area);
-            let widget = Paragraph::new(vec![
-                Line::from(" Enter a filename for your new document "),
-                Line::from(""),
-                Line::from(format!("  Folder: {}", writing_root.display())),
-                Line::from(""),
-                Line::from(format!(
-                    "> {}",
-                    ui_state.new_document_filename_input
-                )),
-                Line::from(""),
-                Line::from(
-                    "  Basename only. Extension optional (.md if omitted); .md, .txt, or .toml.",
-                ),
-                Line::from("  Enter: create   Esc: main menu"),
-            ])
-            .block(
-                Block::default()
-                    .borders(Borders::ALL)
-                    .title(" New document ")
-                    .border_style(Style::default().fg(theme_color_in(theme, ThemeRole::Accent)))
-                    .style(Style::default().bg(theme_color_in(theme, ThemeRole::Background))),
+            paint_writing_folder_basename_prompt(
+                f,
+                ui_state,
+                writing_root,
+                theme,
+                " New document ",
+                " Enter a filename for your new document ",
+                "  Basename only. Extension optional (.md if omitted); .md, .txt, or .toml.",
+                "  Enter: create   Esc: main menu",
             );
-            f.render_widget(widget, area);
+        }
+        OverlayMode::RecoverySaveFilename => {
+            paint_writing_folder_basename_prompt(
+                f,
+                ui_state,
+                writing_root,
+                theme,
+                " Save recovered text ",
+                " Save recovered text as a new file under Writing folder ",
+                "  Basename only. Extension optional (.md if omitted); .md, .txt, or .toml.",
+                "  Enter: save file   Esc: back to autosave options",
+            );
         }
     }
 }
@@ -1655,6 +1852,8 @@ fn overlay_mode_name(mode: OverlayMode) -> &'static str {
         OverlayMode::RecentDocuments => "recent-docs",
         OverlayMode::WritingFolder => "writing-folder",
         OverlayMode::NewDocumentFilename => "new-document-filename",
+        OverlayMode::RecoverySaveFilename => "recovery-save-filename",
+        OverlayMode::RecoverySnapshot => "recovery-snapshot",
         OverlayMode::Configuration => "config",
         OverlayMode::Help => "help",
     }
@@ -1725,6 +1924,53 @@ fn wrap_modal_paragraph(para: &str, max_width: usize) -> Vec<Line<'static>> {
         rest = next.trim_start();
     }
     out
+}
+
+/// Shared basename-under-writing-folder modal for new documents and saving recovery text.
+fn paint_writing_folder_basename_prompt(
+    f: &mut Frame,
+    ui_state: &UiState,
+    writing_root: &Path,
+    theme: &Theme,
+    block_title: &str,
+    header_line: &str,
+    hint1: &str,
+    hint2: &str,
+) {
+    let modal_w = 70.min(f.area().width.max(24));
+    let inner_w = (modal_w as usize).saturating_sub(4).max(16);
+    let folder_txt = format!("  Folder: {}", writing_root.display());
+    let folder_wrapped = wrap_modal_paragraph(folder_txt.as_str(), inner_w);
+    let input_txt = format!("> {}", ui_state.new_document_filename_input);
+    let input_wrapped = wrap_modal_paragraph(input_txt.as_str(), inner_w);
+    let hint1_wrapped = wrap_modal_paragraph(hint1, inner_w);
+    let hint2_wrapped = wrap_modal_paragraph(hint2, inner_w);
+    let body_rows = folder_wrapped.len()
+        + input_wrapped.len()
+        + hint1_wrapped.len()
+        + hint2_wrapped.len()
+        + 5;
+    let h = (body_rows as u16)
+        .saturating_add(3)
+        .min(f.area().height.max(8))
+        .max(8);
+    let area = centered_rect(f.area(), modal_w, h);
+    f.render_widget(Clear, area);
+    let mut lines: Vec<Line> = vec![Line::from(header_line.to_string()), Line::from("")];
+    lines.extend(folder_wrapped);
+    lines.push(Line::from(""));
+    lines.extend(input_wrapped);
+    lines.push(Line::from(""));
+    lines.extend(hint1_wrapped);
+    lines.extend(hint2_wrapped);
+    let widget = Paragraph::new(lines).block(
+        Block::default()
+            .borders(Borders::ALL)
+            .title(block_title)
+            .border_style(Style::default().fg(theme_color_in(theme, ThemeRole::Accent)))
+            .style(Style::default().bg(theme_color_in(theme, ThemeRole::Background))),
+    );
+    f.render_widget(widget, area);
 }
 
 fn clear_status(app_state: &mut AppState) {
@@ -1821,6 +2067,40 @@ fn save_current_document(doc: &Document, ui_state: &mut UiState, app_state: &mut
     ui_state.save_feedback = Some(msg);
 }
 
+fn load_pending_recovery_snapshot(app_state: &mut AppState) {
+    let Ok(text) = fs::read_to_string(&app_state.recovery_path) else {
+        app_state.pending_recovery_snapshot = None;
+        return;
+    };
+    if text.trim().is_empty() {
+        app_state.pending_recovery_snapshot = None;
+        return;
+    }
+    app_state.pending_recovery_snapshot = Some(text);
+}
+
+fn discard_pending_recovery(app_state: &mut AppState) {
+    app_state.pending_recovery_snapshot = None;
+    let _ = fs::remove_file(&app_state.recovery_path);
+}
+
+fn apply_pending_recovery_to_editor(
+    app_state: &mut AppState,
+    doc: &mut Document,
+    state: &mut EditorState,
+    cache: &mut LayoutCache,
+    cfg: &LayoutConfig,
+) -> bool {
+    let Some(text) = app_state.pending_recovery_snapshot.take() else {
+        return false;
+    };
+    *doc = plain_text_to_document(&text);
+    *state = EditorState::default();
+    state.cursor.normalize(doc);
+    cache.sync(doc, 1, cfg);
+    true
+}
+
 fn record_edit_and_snapshot(doc: &Document, app_state: &mut AppState) {
     app_state.edit_counter = app_state.edit_counter.saturating_add(1);
     if app_state.edit_counter % SNAPSHOT_EVERY_EDITS != 0 {
@@ -1840,25 +2120,6 @@ fn record_edit_and_snapshot(doc: &Document, app_state: &mut AppState) {
     }
 }
 
-fn maybe_restore_recovery_snapshot(
-    doc: &mut Document,
-    state: &mut EditorState,
-    cache: &mut LayoutCache,
-    cfg: &LayoutConfig,
-    app_state: &mut AppState,
-) {
-    let Ok(text) = fs::read_to_string(&app_state.recovery_path) else {
-        return;
-    };
-    if text.trim().is_empty() {
-        return;
-    }
-    *doc = plain_text_to_document(&text);
-    *state = EditorState::default();
-    state.cursor.normalize(doc);
-    cache.sync(doc, 1, cfg);
-    app_state.status_message = Some("Recovered unsaved snapshot".to_string());
-}
 
 fn load_start_menu_title_lines(config_path: &Path, app_config: &AppConfig) -> Vec<String> {
     let selected_name = load_start_menu_title_name(config_path, app_config);
@@ -2284,13 +2545,16 @@ start_menu_title = "3D-ASCII"
         let mut recovered_st = EditorState::default();
         let mut cache = LayoutCache::default();
         let cfg = LayoutConfig::default();
-        maybe_restore_recovery_snapshot(
+        load_pending_recovery_snapshot(&mut app);
+        assert!(app.pending_recovery_snapshot.as_deref() == Some("hi"));
+        assert!(apply_pending_recovery_to_editor(
+            &mut app,
             &mut recovered_doc,
             &mut recovered_st,
             &mut cache,
             &cfg,
-            &mut app,
-        );
+        ));
+        assert!(app.pending_recovery_snapshot.is_none());
         let text: String = tyrannus::flatten_document_chars(&recovered_doc)
             .into_iter()
             .map(|(_, ch)| ch)
