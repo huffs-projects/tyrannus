@@ -466,7 +466,12 @@ fn run() -> io::Result<()> {
                                 .modifiers
                                 .contains(crossterm::event::KeyModifiers::CONTROL) =>
                         {
-                            save_current_document(&doc, &mut ui_state, &mut app_state);
+                            save_current_document(
+                                &doc,
+                                &mut ui_state,
+                                &mut app_state,
+                                app_config.paths.writing_folder.as_path(),
+                            );
                         }
                         _ if key_opens_help(key.code, key.modifiers) => {
                             push_help_overlay(&mut ui_state);
@@ -1423,7 +1428,7 @@ fn execute_command(
     writing_root: &Path,
 ) {
     if matches!(cmd, AppCommand::Save) {
-        save_current_document(doc, ui_state, app_state);
+        save_current_document(doc, ui_state, app_state, writing_root);
         return;
     }
 
@@ -2032,13 +2037,23 @@ fn document_to_plain_text(doc: &Document) -> String {
     out
 }
 
-fn save_current_document(doc: &Document, ui_state: &mut UiState, app_state: &mut AppState) {
+fn save_current_document(
+    doc: &Document,
+    ui_state: &mut UiState,
+    app_state: &mut AppState,
+    writing_root: &Path,
+) {
+    if app_state.current_document_path.is_none() {
+        if let Err(msg) = require_writing_folder(writing_root) {
+            app_state.status_message = Some(msg.clone());
+            ui_state.save_feedback = Some(msg);
+            return;
+        }
+        let path = allocate_unique_untitled_path(writing_root);
+        push_recent_document(app_state, path.clone());
+        app_state.current_document_path = Some(path);
+    }
     let Some(path) = app_state.current_document_path.as_ref() else {
-        let msg =
-            "No file path. Open a document from Writing folder in the main menu (Ctrl+M) first."
-                .to_string();
-        app_state.status_message = Some(msg.clone());
-        ui_state.save_feedback = Some(msg);
         return;
     };
     if let Some(parent) = path.parent().filter(|p| !p.as_os_str().is_empty()) {
@@ -2260,6 +2275,22 @@ fn compose_new_document_path(writing_root: &Path, raw_input: &str) -> Result<Pat
     Ok(full)
 }
 
+/// Picks `untitled.md`, then `untitled-2.md`, `untitled-3.md`, … under `writing_root` until unused.
+fn allocate_unique_untitled_path(writing_root: &Path) -> PathBuf {
+    let first = writing_root.join("untitled.md");
+    if !first.exists() {
+        return first;
+    }
+    let mut n = 2u32;
+    loop {
+        let p = writing_root.join(format!("untitled-{n}.md"));
+        if !p.exists() {
+            return p;
+        }
+        n += 1;
+    }
+}
+
 fn list_writing_folder_entries(root: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     let Ok(read_dir) = fs::read_dir(root) else {
@@ -2378,7 +2409,7 @@ mod tests {
             overlay: OverlayMode::None,
             ..Default::default()
         };
-        save_current_document(&Document::new(), &mut ui, &mut app_state);
+        save_current_document(&Document::new(), &mut ui, &mut app_state, base.as_path());
 
         assert!(
             ui.save_feedback.is_some(),
@@ -2390,6 +2421,66 @@ mod tests {
             "unexpected message: {msg}"
         );
         assert!(!missing_parent.join("file.md").exists());
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn save_implicit_path_creates_untitled_under_writing_folder() {
+        let base = std::env::temp_dir().join(format!(
+            "tyrannus_implicit_save_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("mkdir");
+
+        let mut app_state = AppState::default();
+        let mut ui = UiState {
+            overlay: OverlayMode::None,
+            ..Default::default()
+        };
+
+        save_current_document(&Document::new(), &mut ui, &mut app_state, base.as_path());
+
+        let expected = base.join("untitled.md");
+        assert!(expected.exists(), "file should be created");
+        assert_eq!(
+            app_state.current_document_path.as_ref(),
+            Some(&expected)
+        );
+        let msg = ui.save_feedback.expect("expected save feedback");
+        assert!(
+            msg.starts_with("Saved "),
+            "unexpected message: {msg}"
+        );
+
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn save_implicit_path_uses_next_free_untitled_name() {
+        let base = std::env::temp_dir().join(format!(
+            "tyrannus_implicit_save2_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("mkdir");
+        fs::write(base.join("untitled.md"), "").expect("seed");
+
+        let mut app_state = AppState::default();
+        let mut ui = UiState {
+            overlay: OverlayMode::None,
+            ..Default::default()
+        };
+
+        save_current_document(&Document::new(), &mut ui, &mut app_state, base.as_path());
+
+        let expected = base.join("untitled-2.md");
+        assert!(expected.exists());
+        assert_eq!(
+            app_state.current_document_path.as_ref(),
+            Some(&expected)
+        );
 
         let _ = fs::remove_dir_all(&base);
     }

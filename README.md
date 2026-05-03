@@ -102,8 +102,16 @@ send **Ctrl+Backspace** for the same chord as Ctrl+H).
 | Ctrl+M                      | Open main menu (new/recent/writing/config)    |
 | F1 / Ctrl+H                 | Toggle help overlay                          |
 | F2                          | Toggle extra detail on the status line       |
-| Esc                         | Close any overlay                            |
+| Esc                         | Close any overlay (help returns to the screen you opened it from) |
 | Ctrl+Q                      | Quit                                         |
+
+If a non-empty autosave snapshot exists from a previous run (by default under
+`~/.local/state/tyrannus/recovery.txt`), Tyrannus shows **Autosave** first,
+before the main menu: choose **Open** (load into the editor), **Save** (pick a
+basename under your Writing folder and write the file), or **Delete** (discard
+the snapshot file). Move the highlight with **Up**/**Down** and confirm with
+**Enter**; **F1** / **Ctrl+H** opens help and **Esc** / **F1** returns from help
+to that modal.
 
 Several bindings can be overridden in `config.toml` under `[keymap]`; see
 `contrib/default-config.toml` for commented examples.
