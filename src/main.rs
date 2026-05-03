@@ -80,6 +80,7 @@ enum OverlayMode {
     Menu,
     RecentDocuments,
     WritingFolder,
+    NewDocumentFilename,
     Configuration,
     Help,
 }
@@ -87,6 +88,7 @@ enum OverlayMode {
 #[derive(Clone, Debug)]
 struct UiState {
     overlay: OverlayMode,
+    new_document_filename_input: String,
     palette_query: String,
     palette_selected: usize,
     menu_selected: usize,
@@ -106,6 +108,7 @@ impl Default for UiState {
     fn default() -> Self {
         Self {
             overlay: OverlayMode::Menu,
+            new_document_filename_input: String::new(),
             palette_query: String::new(),
             palette_selected: 0,
             menu_selected: 0,
@@ -158,6 +161,7 @@ enum OverlayAction {
     OpenSelectedWriting,
     RetryConfiguration,
     CreateConfiguration,
+    ConfirmNewDocumentBasename,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -165,6 +169,8 @@ struct AppState {
     current_document_path: Option<PathBuf>,
     recent_documents: Vec<PathBuf>,
     writing_folder_entries: Vec<PathBuf>,
+    /// When set and the Writing folder overlay is shown, replaces the usual empty-folder message.
+    writing_folder_overlay_error: Option<String>,
     status_message: Option<String>,
     recovery_path: PathBuf,
     edit_counter: usize,
@@ -1116,6 +1122,22 @@ fn handle_overlay_key(
             _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
             _ => {}
         },
+        OverlayMode::NewDocumentFilename => match code {
+            KeyCode::Esc => {
+                ui_state.overlay = OverlayMode::Menu;
+            }
+            KeyCode::Enter => return Some(OverlayAction::ConfirmNewDocumentBasename),
+            _ if key_opens_help(code, modifiers) => ui_state.overlay = OverlayMode::Help,
+            KeyCode::Backspace => {
+                ui_state.new_document_filename_input.pop();
+            }
+            KeyCode::Char(c) => {
+                if ui_state.new_document_filename_input.chars().count() < 256 {
+                    ui_state.new_document_filename_input.push(c);
+                }
+            }
+            _ => {}
+        },
         OverlayMode::Configuration => match code {
             KeyCode::Esc => ui_state.overlay = OverlayMode::Menu,
             KeyCode::Enter | KeyCode::Char('r') | KeyCode::Char('R') => {
@@ -1233,6 +1255,26 @@ fn execute_overlay_action(
                 }
             }
         }
+        OverlayAction::ConfirmNewDocumentBasename => {
+            match compose_new_document_path(writing_root, ui_state.new_document_filename_input.as_str())
+            {
+                Err(msg) => {
+                    app_state.status_message = Some(msg);
+                }
+                Ok(path) => {
+                    *doc = Document::new();
+                    *state = EditorState::default();
+                    state.cursor.normalize(doc);
+                    cache.sync(doc, 1, cfg);
+                    push_recent_document(app_state, path.clone());
+                    app_state.current_document_path = Some(path.clone());
+                    ui_state.new_document_filename_input.clear();
+                    ui_state.overlay = OverlayMode::None;
+                    app_state.status_message =
+                        Some(format!("New document: {} (Ctrl+S to save.)", path.display()));
+                }
+            }
+        }
     }
     false
 }
@@ -1252,17 +1294,29 @@ fn execute_command(
         return;
     }
 
+    if matches!(cmd, AppCommand::NewDocument) {
+        match require_writing_folder(writing_root) {
+            Err(msg) => {
+                app_state.status_message = Some(msg.clone());
+                ui_state.save_feedback = Some(msg);
+            }
+            Ok(()) => {
+                ui_state.new_document_filename_input.clear();
+                ui_state.overlay = OverlayMode::NewDocumentFilename;
+                app_state.status_message = Some(
+                    "Enter basename. Extension optional (.md if omitted); .md/.txt/.toml only.".to_string(),
+                );
+            }
+        }
+        return;
+    }
+
     ui_state.overlay = OverlayMode::None;
     ui_state.save_feedback = None;
 
     match cmd {
         AppCommand::NewDocument => {
-            *doc = Document::new();
-            *state = EditorState::default();
-            state.cursor.normalize(doc);
-            cache.sync(doc, 1, cfg);
-            app_state.current_document_path = None;
-            app_state.status_message = Some("New document created".to_string());
+            unreachable!("NewDocument handled before overlay reset")
         }
         AppCommand::ShowHelp => {
             ui_state.overlay = OverlayMode::Help;
@@ -1281,17 +1335,27 @@ fn execute_command(
             }
         }
         AppCommand::WritingFolder => {
-            app_state.writing_folder_entries = list_writing_folder_entries(writing_root);
             ui_state.list_selected = 0;
             ui_state.overlay = OverlayMode::WritingFolder;
-            if app_state.writing_folder_entries.is_empty() {
-                app_state.status_message = Some(format!(
-                    "No .md/.txt/.toml files in {}. Add files or set [paths].writing_folder in config.",
-                    writing_root.display()
-                ));
-            } else {
-                app_state.status_message =
-                    Some("Select a document and press Enter to open.".to_string());
+            match require_writing_folder(writing_root) {
+                Err(msg) => {
+                    app_state.writing_folder_overlay_error = Some(msg.clone());
+                    app_state.writing_folder_entries = vec![];
+                    app_state.status_message = Some(msg);
+                }
+                Ok(()) => {
+                    app_state.writing_folder_overlay_error = None;
+                    app_state.writing_folder_entries = list_writing_folder_entries(writing_root);
+                    if app_state.writing_folder_entries.is_empty() {
+                        app_state.status_message = Some(format!(
+                            "No .md/.txt/.toml files in {}. Add files or set [paths].writing_folder in config.",
+                            writing_root.display()
+                        ));
+                    } else {
+                        app_state.status_message =
+                            Some("Select a document and press Enter to open.".to_string());
+                    }
+                }
             }
         }
         AppCommand::Configuration => {
@@ -1425,13 +1489,24 @@ fn paint_overlay(
             f.render_widget(widget, area);
         }
         OverlayMode::WritingFolder => {
-            let area = centered_rect(f.area(), 70, 16);
+            let area = centered_rect(f.area(), 76, 16);
             f.render_widget(Clear, area);
             let mut lines: Vec<Line> =
                 vec![Line::from(" Writing folder "), Line::from("")];
             lines.push(Line::from(format!("  {}", writing_root.display())));
             lines.push(Line::from(""));
-            if app_state.writing_folder_entries.is_empty() {
+            if let Some(err) = app_state.writing_folder_overlay_error.as_deref() {
+                for wl in wrap_modal_paragraph(err, 66) {
+                    lines.push(Line::from(Span::styled(
+                        format!("  {wl}"),
+                        Style::default().fg(theme_color_in(theme, ThemeRole::LinkMissing)),
+                    )));
+                }
+                lines.push(Line::from(""));
+                lines.push(Line::from(
+                    "  Create the folder or set [paths].writing_folder — Esc: main menu",
+                ));
+            } else if app_state.writing_folder_entries.is_empty() {
                 lines.push(Line::from(Span::styled(
                     "  No matching files here (.md/.txt/.toml).",
                     Style::default().fg(theme_color_in(theme, ThemeRole::LinkMissing)),
@@ -1534,6 +1609,33 @@ fn paint_overlay(
             );
             f.render_widget(widget, area);
         }
+        OverlayMode::NewDocumentFilename => {
+            let area = centered_rect(f.area(), 70, 13);
+            f.render_widget(Clear, area);
+            let widget = Paragraph::new(vec![
+                Line::from(" Enter a filename for your new document "),
+                Line::from(""),
+                Line::from(format!("  Folder: {}", writing_root.display())),
+                Line::from(""),
+                Line::from(format!(
+                    "> {}",
+                    ui_state.new_document_filename_input
+                )),
+                Line::from(""),
+                Line::from(
+                    "  Basename only. Extension optional (.md if omitted); .md, .txt, or .toml.",
+                ),
+                Line::from("  Enter: create   Esc: main menu"),
+            ])
+            .block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" New document ")
+                    .border_style(Style::default().fg(theme_color_in(theme, ThemeRole::Accent)))
+                    .style(Style::default().bg(theme_color_in(theme, ThemeRole::Background))),
+            );
+            f.render_widget(widget, area);
+        }
     }
 }
 
@@ -1552,6 +1654,7 @@ fn overlay_mode_name(mode: OverlayMode) -> &'static str {
         OverlayMode::Menu => "menu",
         OverlayMode::RecentDocuments => "recent-docs",
         OverlayMode::WritingFolder => "writing-folder",
+        OverlayMode::NewDocumentFilename => "new-document-filename",
         OverlayMode::Configuration => "config",
         OverlayMode::Help => "help",
     }
@@ -1817,6 +1920,85 @@ fn is_valid_title_name(name: &str) -> bool {
     !name.is_empty() && !name.contains('/') && !name.contains('\\') && name != "." && name != ".."
 }
 
+fn require_writing_folder(root: &Path) -> Result<(), String> {
+    match fs::metadata(root) {
+        Ok(m) if m.is_dir() => Ok(()),
+        Ok(_) => Err(format!(
+            "Writing folder is not a directory: {}",
+            root.display()
+        )),
+        Err(e) if e.kind() == io::ErrorKind::NotFound => Err(format!(
+            "Writing folder does not exist: {}. Create it or set [paths].writing_folder in config.",
+            root.display()
+        )),
+        Err(e) => Err(format!(
+            "Cannot access Writing folder {}: {e}",
+            root.display()
+        )),
+    }
+}
+
+/// Basename plus extension rules for a new document under the Writing folder: `.md` when omitted; only `.md` / `.txt` / `.toml` allowed otherwise.
+fn finalize_new_document_basename(raw_input: &str) -> Result<String, String> {
+    const MAX_CHARS: usize = 256;
+
+    let trimmed = raw_input.trim();
+    if trimmed.is_empty() {
+        return Err("Filename cannot be empty.".to_string());
+    }
+    if trimmed == "." || trimmed == ".." {
+        return Err("Invalid filename.".to_string());
+    }
+    if trimmed.chars().count() > MAX_CHARS {
+        return Err(format!(
+            "Filename is too long (max {MAX_CHARS} characters)."
+        ));
+    }
+    if trimmed.contains('/') || trimmed.contains('\\') {
+        return Err("Use a basename only, not a path.".to_string());
+    }
+    if trimmed.bytes().any(|b| b == 0) {
+        return Err("Invalid filename.".to_string());
+    }
+
+    let path = Path::new(trimmed);
+    let Some(file_name) = path.file_name().and_then(|n| n.to_str()) else {
+        return Err("Invalid filename.".to_string());
+    };
+    if file_name != trimmed {
+        return Err("Invalid filename.".to_string());
+    }
+
+    match path.extension().and_then(|e| e.to_str()) {
+        None => Ok(format!("{trimmed}.md")),
+        Some(ext) => {
+            if ext.is_empty() {
+                return Err("Invalid extension.".to_string());
+            }
+            let el = ext.to_ascii_lowercase();
+            if matches!(el.as_str(), "md" | "txt" | "toml") {
+                Ok(trimmed.to_string())
+            } else {
+                Err(format!(
+                    "Extension .{ext} not allowed — use .md, .txt, or .toml."
+                ))
+            }
+        }
+    }
+}
+
+fn compose_new_document_path(writing_root: &Path, raw_input: &str) -> Result<PathBuf, String> {
+    let base = finalize_new_document_basename(raw_input)?;
+    let full = writing_root.join(base);
+    if full.exists() {
+        return Err(format!(
+            "{} already exists. Choose another basename.",
+            full.display()
+        ));
+    }
+    Ok(full)
+}
+
 fn list_writing_folder_entries(root: &Path) -> Vec<PathBuf> {
     let mut entries: Vec<PathBuf> = Vec::new();
     let Ok(read_dir) = fs::read_dir(root) else {
@@ -1948,6 +2130,77 @@ mod tests {
         );
         assert!(!missing_parent.join("file.md").exists());
 
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn require_writing_folder_accepts_existing_dir() {
+        let base = std::env::temp_dir().join(format!("tyrannus_wf_ok_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("mkdir");
+        assert!(require_writing_folder(base.as_path()).is_ok());
+        let _ = fs::remove_dir_all(&base);
+    }
+
+    #[test]
+    fn require_writing_folder_errors_when_missing() {
+        let base = std::env::temp_dir().join(format!(
+            "tyrannus_wf_missing_{}",
+            std::process::id()
+        ));
+        let _ = fs::remove_dir_all(&base);
+        let p = base.join("does_not_exist_here");
+        let err = require_writing_folder(p.as_path()).expect_err("expected err");
+        assert!(
+            err.contains("does not exist"),
+            "unexpected message: {err}"
+        );
+    }
+
+    #[test]
+    fn finalize_new_document_basename_appends_md_when_no_extension() {
+        assert_eq!(
+            finalize_new_document_basename("story").unwrap(),
+            "story.md"
+        );
+        assert_eq!(
+            finalize_new_document_basename("  note  ").unwrap(),
+            "note.md"
+        );
+    }
+
+    #[test]
+    fn finalize_new_document_basename_rejects_paths_and_bad_extensions() {
+        assert!(finalize_new_document_basename("a/b").is_err());
+        assert!(finalize_new_document_basename("..").is_err());
+        let pdf = finalize_new_document_basename("doc.pdf").expect_err("pdf rejected");
+        assert!(
+            pdf.contains("not allowed"),
+            "unexpected message: {pdf}"
+        );
+    }
+
+    #[test]
+    fn finalize_new_document_accepts_whitelisted_extensions() {
+        assert_eq!(
+            finalize_new_document_basename("cfg.TOML").unwrap(),
+            "cfg.TOML"
+        );
+        assert_eq!(finalize_new_document_basename("a.txt").unwrap(), "a.txt");
+    }
+
+    #[test]
+    fn compose_new_document_path_errors_when_target_exists() {
+        let base = std::env::temp_dir().join(format!("tyrannus_compose_{}", std::process::id()));
+        let _ = fs::remove_dir_all(&base);
+        fs::create_dir_all(&base).expect("mkdir");
+        fs::write(base.join("exists.md"), "").expect("touch");
+        let err = compose_new_document_path(base.as_path(), "exists").expect_err("");
+        assert!(err.contains("already exists"), "unexpected: {err}");
+        assert_eq!(
+            compose_new_document_path(base.as_path(), "fresh").unwrap(),
+            base.join("fresh.md")
+        );
         let _ = fs::remove_dir_all(&base);
     }
 
