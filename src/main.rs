@@ -89,6 +89,21 @@ enum OverlayMode {
     Help,
 }
 
+/// Autosave recovery is a pre-editor step: do not paint the document surface until the user
+/// picks "Open — load into editor". Same while entering a save basename or viewing Help from that flow.
+fn recovery_flow_hides_editor(ui_state: &UiState) -> bool {
+    matches!(
+        ui_state.overlay,
+        OverlayMode::RecoverySnapshot | OverlayMode::RecoverySaveFilename
+    ) || matches!(
+        (&ui_state.overlay, ui_state.help_return_overlay.as_ref()),
+        (
+            &OverlayMode::Help,
+            Some(OverlayMode::RecoverySnapshot | OverlayMode::RecoverySaveFilename),
+        )
+    )
+}
+
 #[derive(Clone, Debug)]
 struct UiState {
     overlay: OverlayMode,
@@ -300,6 +315,24 @@ fn run() -> io::Result<()> {
             }
             if ui_state.overlay == OverlayMode::Menu {
                 paint_start_menu(f, &ui_state, &theme);
+                paint_save_feedback_modal(f, &ui_state, &theme);
+                return;
+            }
+            if recovery_flow_hides_editor(&ui_state) {
+                f.render_widget(
+                    Block::default().style(Style::default().bg(theme_color_in(
+                        &theme,
+                        ThemeRole::Background,
+                    ))),
+                    f.area(),
+                );
+                paint_overlay(
+                    f,
+                    &ui_state,
+                    &app_state,
+                    &theme,
+                    app_config.paths.writing_folder.as_path(),
+                );
                 paint_save_feedback_modal(f, &ui_state, &theme);
                 return;
             }
@@ -1368,15 +1401,14 @@ fn execute_overlay_action(
                         ));
                     }
                     Ok(()) => {
-                        *doc = plain_text_to_document(&snapshot);
+                        *doc = Document::new();
                         *state = EditorState::default();
                         state.cursor.normalize(doc);
                         cache.sync(doc, 1, cfg);
                         push_recent_document(app_state, path.clone());
-                        app_state.current_document_path = Some(path.clone());
                         ui_state.new_document_filename_input.clear();
                         let _ = fs::remove_file(&app_state.recovery_path);
-                        ui_state.overlay = OverlayMode::None;
+                        ui_state.overlay = OverlayMode::Menu;
                         app_state.status_message =
                             Some(format!("Saved recovered text to {}", path.display()));
                     }
