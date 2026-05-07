@@ -8,18 +8,6 @@ layout cache, selection-as-overlay rendering. Not a line editor.
 
 ## Install
 
-### Prebuilt binaries ([GitHub Releases](https://github.com/huffs-projects/tyrannus/releases))
-
-Each release attaches archives named with the **release tag** (for example `0.1.0`). The tag string in the filename matches GitHub’s release tag exactly (including a `v` prefix if the project uses one).
-
-| Platform | Archive |
-|----------|---------|
-| Linux x86_64 | `tyrannus-0.1.0-linux-x86_64.tar.gz` |
-| macOS Apple Silicon | `tyrannus-0.1.0-macos-aarch64.tar.gz` |
-| Windows x86_64 | `tyrannus-0.1.0-windows-x86_64.zip` |
-
-Extract and put `tyrannus` on your `PATH` (on Windows, `tyrannus.exe`).
-
 ### Homebrew
 
 Supported platforms match the formula: **macOS arm64** and **Linux x86_64**.
