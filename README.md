@@ -1,10 +1,6 @@
 # tyrannus
 
-A terminal word processor in Rust, built on [ratatui](https://ratatui.rs) and
-[crossterm](https://docs.rs/crossterm). Block AST + inline tree, viewport-bounded
-layout cache, selection-as-overlay rendering. Not a line editor.
-
-**Repository:** [github.com/huffs-projects/tyrannus](https://github.com/huffs-projects/tyrannus)
+A terminal word processor in Rust, built for writers, not coders or literally anyone else.
 
 ## Install
 
@@ -13,7 +9,8 @@ layout cache, selection-as-overlay rendering. Not a line editor.
 Supported platforms match the formula: **macOS arm64** and **Linux x86_64**.
 
 ```bash
-brew install https://raw.githubusercontent.com/huffs-projects/tyrannus/main/Formula/tyrannus.rb
+brew tap huffs-projects/tyrannus https://github.com/huffs-projects/tyrannus
+brew install huffs-projects/tyrannus/tyrannus
 ```
 
 ### Arch Linux (AUR)
